@@ -4,7 +4,7 @@ const jwt = require('jsonwebtoken');
 const userModel = require('../models/user.model')
 const aiService = require('../services/ai.service')
 const messageModel = require('../models/message.model')
-const {createMemory, queryMemory} = require('../services/vectors.service')
+const { createMemory, queryMemory } = require('../services/vectors.service')
 
 function initSocketServer(httpServer) {
     const io = new Server(httpServer, {});
@@ -29,101 +29,136 @@ function initSocketServer(httpServer) {
 
 
         socket.on("ai-message", async (messagePayload) => {
-
-            // save message from user to db
+            /*
+            save message from user to mongodb
             const message = await messageModel.create({
                 chat: messagePayload.chat,
                 user: socket.user._id,
                 content: messagePayload.content,
                 role: "user"
             })
-            // create its vectors
+            create its vectors
             const vectors = await aiService.generateVector(messagePayload.content)
+            */
+            // optimised
+            const [message, vectors] = await Promise.all([
+                messageModel.create({
+                    chat: messagePayload.chat,
+                    user: socket.user._id,
+                    content: messagePayload.content,
+                    role: "user"
+                }),
+                aiService.generateVector(messagePayload.content),
+            ])
+            // create memory(save usermessage to pinecone)
+               await createMemory({
+                    vectors,
+                    messageId: message._id,
+                    metadata: {
+                        chat: messagePayload.chat,
+                        text: messagePayload.content,
+                        user: socket.user._id
+                    }
+                })
 
-
-            // query memory
+            /*
+            // query pinecone for related memory
             const memory = await queryMemory({
-                queryVector:vectors,
-                limit:3,
-                metadata:{
-                    user:socket.user._id
+                queryVector: vectors,
+                limit: 3,
+                metadata: {
+                    user: socket.user._id
                 }
             })
 
-            // create memory
-            await createMemory({
-                vectors,
-                messageId:message._id,
-                metadata:{
-                    chat:messagePayload.chat,
-                    text:messagePayload.content,
-                    user:socket.user._id
-                }
-            })
-            
-
-
-            
-            // create chathistory for stm
+            //retrieve chathistory from mongodb for stm
             const chatHistory = (await messageModel.find({
                 chat: messagePayload.chat
-            }).sort({createdAt:-1}).limit(20).lean()).reverse()
+            }).sort({ createdAt: -1 }).limit(20).lean()).reverse()
+            */
+            // optimised approach
+            const [memory, chatHistory] = await Promise.all([
+                queryMemory({
+                    queryVector: vectors,
+                    limit: 3,
+                    metadata: {
+                        user: socket.user._id
+                    }
+                }),
+                messageModel.find({
+                    chat: messagePayload.chat
+                }).sort({ createdAt: -1 }).limit(20).lean().then(messages => messages.reverse())
 
+            ])
 
+            // create short term memory
             const stm = chatHistory.map(item => {
                 return {
-                role: item.role,
-                parts: [{ text: item.content }]
-            }
+                    role: item.role,
+                    parts: [{ text: item.content }]
+                }
             });
 
+            // create long term memory
             const ltm = [
                 {
-                    role:'user',
-                    parts:[ {text:`
+                    role: 'user',
+                    parts: [{
+                        text: `
 
                         these are some previous messages from the chat,use them to generate a response
                         ${memory.map(item => item.metadata.text).join('\n')}
 
-                        `} ]
+                        `}]
                 }
             ]
 
-           console.log(ltm[0])
-           console.log(stm)
+            // send ltm and stm to ai and get ai-response
+            const response = await aiService.generateResponse([...ltm, ...stm])
 
-            // send chathistory to ai and get response
-            const response = await aiService.generateResponse([...ltm,...stm])
+           // send ai-reponse to user
+            socket.emit("ai-response", {
+                content: response,
+                chat: messagePayload.chat
+            })
 
-            // save respone to db
-           const responseMessage = await messageModel.create({
+
+
+
+            /* 
+            // save ai-respone to mongodb
+            const responseMessage = await messageModel.create({
                 chat: messagePayload.chat,
                 user: socket.user._id,
                 content: response,
                 role: "model"
             })
 
-            // create response vector
+            // create ai-response vector
             const responseVectors = await aiService.generateVector(response)
-
-            // again create memory
+            */
+            //    optimised 
+            const [responseMessage, responseVectors] = await Promise.all([
+                messageModel.create({
+                    chat: messagePayload.chat,
+                    user: socket.user._id,
+                    content: response,
+                    role: "model"
+                }),
+                aiService.generateVector(response)
+            ])
+             //  create memory for ai-response in pinecone
             await createMemory({
-                vectors : responseVectors,
-                messageId:responseMessage._id,
-                metadata:{
-                    chat:messagePayload.chat,
-                    text:response,
-                    user:socket.user._id
+                vectors: responseVectors,
+                messageId: responseMessage._id,
+                metadata: {
+                    chat: messagePayload.chat,
+                    text: response,
+                    user: socket.user._id
                 }
             })
 
-
-            // send reponse to user
-            socket.emit("ai-response", {
-                content: response,
-                chat: messagePayload.chat
-            })
-
+            
         })
 
     })
