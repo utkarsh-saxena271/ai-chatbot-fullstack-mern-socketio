@@ -29,23 +29,28 @@ function initSocketServer(httpServer) {
 
 
         socket.on("ai-message", async (messagePayload) => {
-            // console.log(messagePayload)
-            // console.lo g(socket.user)
 
+            // save message from user to db
             const message = await messageModel.create({
                 chat: messagePayload.chat,
                 user: socket.user._id,
                 content: messagePayload.content,
                 role: "user"
             })
-
+            // create its vectors
             const vectors = await aiService.generateVector(messagePayload.content)
+
+
+            // query memory
             const memory = await queryMemory({
                 queryVector:vectors,
                 limit:3,
-                metadata:{}
+                metadata:{
+                    user:socket.user._id
+                }
             })
 
+            // create memory
             await createMemory({
                 vectors,
                 messageId:message._id,
@@ -55,35 +60,53 @@ function initSocketServer(httpServer) {
                     user:socket.user._id
                 }
             })
-            console.log(memory)
+            
 
 
             
-
-            const rawChatHistory = (await messageModel.find({
+            // create chathistory for stm
+            const chatHistory = (await messageModel.find({
                 chat: messagePayload.chat
             }).sort({createdAt:-1}).limit(20).lean()).reverse()
 
 
-            const chatHistory = rawChatHistory.map(item => {
+            const stm = chatHistory.map(item => {
                 return {
                 role: item.role,
                 parts: [{ text: item.content }]
             }
             });
 
-            // console.log(formattedHistory);
+            const ltm = [
+                {
+                    role:'user',
+                    parts:[ {text:`
 
-            const response = await aiService.generateResponse(chatHistory)
+                        these are some previous messages from the chat,use them to generate a response
+                        ${memory.map(item => item.metadata.text).join('\n')}
 
+                        `} ]
+                }
+            ]
 
+           console.log(ltm[0])
+           console.log(stm)
+
+            // send chathistory to ai and get response
+            const response = await aiService.generateResponse([...ltm,...stm])
+
+            // save respone to db
            const responseMessage = await messageModel.create({
                 chat: messagePayload.chat,
                 user: socket.user._id,
                 content: response,
                 role: "model"
             })
+
+            // create response vector
             const responseVectors = await aiService.generateVector(response)
+
+            // again create memory
             await createMemory({
                 vectors : responseVectors,
                 messageId:responseMessage._id,
@@ -94,6 +117,8 @@ function initSocketServer(httpServer) {
                 }
             })
 
+
+            // send reponse to user
             socket.emit("ai-response", {
                 content: response,
                 chat: messagePayload.chat
