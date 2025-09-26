@@ -51,15 +51,15 @@ function initSocketServer(httpServer) {
                 aiService.generateVector(messagePayload.content),
             ])
             // create memory(save usermessage to pinecone)
-               await createMemory({
-                    vectors,
-                    messageId: message._id,
-                    metadata: {
-                        chat: messagePayload.chat,
-                        text: messagePayload.content,
-                        user: socket.user._id
-                    }
-                })
+            await createMemory({
+                vectors,
+                messageId: message._id,
+                metadata: {
+                    chat: messagePayload.chat,
+                    text: messagePayload.content,
+                    user: socket.user._id
+                }
+            })
 
             /*
             // query pinecone for related memory
@@ -113,19 +113,16 @@ function initSocketServer(httpServer) {
                 }
             ]
 
-            // send ltm and stm to ai and get ai-response
-            const response = await aiService.generateResponse([...ltm, ...stm])
+            try {
+                // send ltm and stm to ai and get ai-response
+                const response = await aiService.generateResponse([...ltm, ...stm])
 
-           // send ai-reponse to user
-            socket.emit("ai-response", {
-                content: response,
-                chat: messagePayload.chat
-            })
-
-
-
-
-            /* 
+                // send ai-reponse to user
+                socket.emit("ai-response", {
+                    content: response,
+                    chat: messagePayload.chat
+                })
+                /* 
             // save ai-respone to mongodb
             const responseMessage = await messageModel.create({
                 chat: messagePayload.chat,
@@ -137,28 +134,38 @@ function initSocketServer(httpServer) {
             // create ai-response vector
             const responseVectors = await aiService.generateVector(response)
             */
-            //    optimised 
-            const [responseMessage, responseVectors] = await Promise.all([
-                messageModel.create({
-                    chat: messagePayload.chat,
-                    user: socket.user._id,
-                    content: response,
-                    role: "model"
-                }),
-                aiService.generateVector(response)
-            ])
-             //  create memory for ai-response in pinecone
-            await createMemory({
-                vectors: responseVectors,
-                messageId: responseMessage._id,
-                metadata: {
-                    chat: messagePayload.chat,
-                    text: response,
-                    user: socket.user._id
-                }
-            })
+                //    optimised 
+                const [responseMessage, responseVectors] = await Promise.all([
+                    messageModel.create({
+                        chat: messagePayload.chat,
+                        user: socket.user._id,
+                        content: response,
+                        role: "model"
+                    }),
+                    aiService.generateVector(response)
+                ])
+                //  create memory for ai-response in pinecone
+                await createMemory({
+                    vectors: responseVectors,
+                    messageId: responseMessage._id,
+                    metadata: {
+                        chat: messagePayload.chat,
+                        text: response,
+                        user: socket.user._id
+                    }
+                })
 
-            
+            }
+            catch (err) {
+                console.error("AI error:", err);
+                socket.emit("ai-response", { message: "AI service unavailable, try again later." });
+            }
+
+
+
+
+
+
         })
 
     })
